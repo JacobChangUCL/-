@@ -30,7 +30,7 @@ The entrance of the project is main.py, which can be run directly in the termina
 python main.py
 ```
 
-## step1
+## v1
 - 搜集原始训练语料，整理为'Datasets/train_lunyu.json'，包含512行论语句子。句子中所有的标点符号都为中文全角标点。
 - 使用'make_vocab.py'生成词表文件'Datasets/vocab_file.txt'
 - 编写中文词表tokenization文件'A/tokenization_bert_chinese.py',实现打开词表文件，tokenize指定句子等功能。
@@ -57,9 +57,14 @@ whitespace_tokenize():
 [69, 22, 454, 758]
 ```
 
-## step2
+## v2
 - 下载中文文言文预训练模型，地址为：https://drive.google.com/drive/folders/1dtHTRn3fX7g8cPCCaJEXA2tmrIcImR6t
 - 重命名配置文件config.json为config_lunyu.json,并调整相应参数值。
 - 使用argparse添加main.py的运行参数，所有参数都指定默认值。
 - 在main.py中添加transformers.modeling_gpt2模块。
 - 测试模型加载过程。
+
+## v3
+- 加载tokenized_data。
+- 配置optimizer和scheduler。
+- 训练tokenized_data，log to tensorboard, 保存模型文件。

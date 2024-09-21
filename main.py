@@ -5,85 +5,80 @@ import argparse
 import transformers
 import torch
 import torch.nn.functional as F
+from torch.nn import DataParallel
+import numpy as np
+from tqdm import tqdm
+import random
+from datetime import datetime
+
+trainData = []
+
+def readTokenizedData(file)->list[int]:
+    """
+    Read tokenized data from file, return a list of tokens
+    It is used to read txt file in the "tokenized" folder
+    """
+    with open(file, 'r') as f:
+        line = f.read().strip()
+    tokens = line.split()
+    tokens = [int(token) for token in tokens]
+    return tokens
+
+def buildTrainData(data_path, num_pieces):
+    """
+    Read multiple tokenized data files and combine them into trainData
+    """
+    for i in range(num_pieces):
+        tokens = readTokenizedData(data_path + 'tokenized_train_{}.txt'.format(i))
+        trainData.append(tokens)
+    
 
 def main():
+    #define the command line arguments
     parser_train = argparse.ArgumentParser()
-    parser_train.add_argument('--device', default='0,1', type=str, required=False, help='GPU devices')
     parser_train.add_argument('--model_config', default='Datasets/config_lunyu.json', type=str, required=False, help='model config file')
     parser_train.add_argument('--tokenizer_path', default='Datasets/vocab_file.txt', type=str, required=False, help='vocab file')
     parser_train.add_argument('--raw_data_path', default='Datasets/train_lunyu.json', type=str, required=False, help='raw trainning data')
     parser_train.add_argument('--tokenized_data_path', default='Datasets/tokenized/', type=str, required=False, help='path of tokenized data')
-    parser_train.add_argument('--raw', default=True, action='store_true', help='do tokenize first')
     parser_train.add_argument('--epochs', default=20, type=int, required=False, help='epochs')
     parser_train.add_argument('--batch_size', default=2, type=int, required=False, help='batch size')
     parser_train.add_argument('--lr', default=1.5e-4, type=float, required=False, help='learning rate')
     parser_train.add_argument('--warmup_steps', default=9000, type=int, required=False, help='warm up steps')
-    parser_train.add_argument('--log_step', default=1, type=int, required=False, help='log loss steps')
-    parser_train.add_argument('--stride', default=512, type=int, required=False, help='stride window')
-    parser_train.add_argument('--gradient_accumulation', default=1, type=int, required=False, help='gradient accumulation')
-    parser_train.add_argument('--fp16', default=False, action='store_true', help='fp16')
-    parser_train.add_argument('--fp16_opt_level', default='O1', type=str, required=False)
+    parser_train.add_argument('--stride', default=128, type=int, required=False, help='stride window')
     parser_train.add_argument('--max_grad_norm', default=1.0, type=float, required=False)
     parser_train.add_argument('--num_pieces', default=10, type=int, required=False, help='trainning pieces')
-    parser_train.add_argument('--min_length', default=1, type=int, required=False, help='min length of data')
     parser_train.add_argument('--output_dir', default='Datasets/model/', type=str, required=False, help='output dir for model')
-    parser_train.add_argument('--pretrained_model', default='', type=str, required=False, help='pretrained model')
     parser_train.add_argument('--writer_dir', default='Datasets/tensorboard_summary/', type=str, required=False, help='Tensorboard path')
-    parser_train.add_argument('--segment', default=False, action='store_true', help='if need split Chinese')
-
-    parser_train.add_argument('--length', default=-1, type=int, required=False, help='length of generation')
-    parser_train.add_argument('--nsamples', default=1, type=int, required=False, help='samples')
-    parser_train.add_argument('--temperature', default=1, type=float, required=False, help='temperature')
-    parser_train.add_argument('--topk', default=8, type=int, required=False, help='top k')
-    parser_train.add_argument('--topp', default=0, type=float, required=False, help='topp')
-    parser_train.add_argument('--model_path', default='Datasets', type=str, required=False, help='model path')
-    parser_train.add_argument('--prefix', default='LUNYU', type=str, required=False, help='start of words')
-    parser_train.add_argument('--no_wordpiece', action='store_true', help='no word piece')
-    parser_train.add_argument('--fast_pattern', action='store_true', help='if use fast pattern')
-    parser_train.add_argument('--repetition_penalty', default=1.0, type=float, required=False)
 
     args = parser_train.parse_args()
     print('\tTraining args:\n' + args.__repr__())
    
-    print("Training...")
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
-
     model_config = transformers.modeling_gpt2.GPT2Config.from_json_file(args.model_config)
     print('\tTraining: config file:\n' + model_config.to_json_string())
-
-    n_ctx = model_config.n_ctx
-    tokenizer = tokenization_bert_chinese.BertTokenizer(vocab_file=args.tokenizer_path)
+    # get the context length from the model config
+    n_ctx = model_config.n_ctx 
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('\t Training: device:', device)
 
-    raw_data_path = args.raw_data_path
     tokenized_data_path = args.tokenized_data_path
-    raw = args.raw 
     epochs = args.epochs
     batch_size = args.batch_size
     lr = args.lr
+    # Learning rate warmup: the learning rate is increased linearly from 0 to lr over the first warmup_steps training steps.
     warmup_steps = args.warmup_steps
-    log_step = args.log_step
     stride = args.stride
-    gradient_accumulation = args.gradient_accumulation
-    fp16 = args.fp16  
-    fp16_opt_level = args.fp16_opt_level
     max_grad_norm = args.max_grad_norm
     num_pieces = args.num_pieces
-    min_length = args.min_length
     output_dir = args.output_dir
     tb_writer = SummaryWriter(log_dir=args.writer_dir)
-    assert log_step % gradient_accumulation == 0
 
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    if not args.pretrained_model:
-        model = transformers.modeling_gpt2.GPT2LMHeadModel(config=model_config)
-    else:
-        model = transformers.modeling_gpt2.GPT2LMHeadModel.from_pretrained(args.pretrained_model)
+    model = transformers.modeling_gpt2.GPT2LMHeadModel(config=model_config)
+
+    print("Training...")
 
     model.train()
     model.to(device)
@@ -94,6 +89,102 @@ def main():
         num_parameters += parameter.numel()
     print('\tTraining: number of parameters: {}'.format(num_parameters))
 
+    multi_gpu = False
+    full_len = 0
+
+    buildTrainData(tokenized_data_path, num_pieces) # num_pieces=10
+
+    for i in range(num_pieces):
+        full_len += len(trainData[i])
+    
+    print(full_len) # 17825,the total number of tokens
+
+    total_steps = int(full_len / stride * epochs / batch_size )
+    #total_samples = (full_len / stride) * epochs
+    #total_steps = int(total_samples / batch_size)
+    print('\tTraining: total steps = {}'.format(total_steps))
+
+    #define optimizer and scheduler
+    optimizer = transformers.AdamW(model.parameters(), lr=lr, correct_bias=True)
+
+    scheduler = transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps,
+                                                            num_training_steps=total_steps)
+
+    if torch.cuda.device_count() > 1:
+        print("\tTraining: Let's use", torch.cuda.device_count(), "GPUs!")
+        model = DataParallel(model, device_ids=[int(i) for i in range(torch.cuda.device_count())])
+        multi_gpu = True
+
+    print('\tTraining: starting training')
+    overall_step = 0
+    running_loss = 0
+
+    for epoch in range(epochs):
+        print('Training: epoch {}'.format(epoch + 1))
+        now = datetime.now()
+        x = np.linspace(0, num_pieces - 1, num_pieces, dtype=np.int32)
+        random.shuffle(x)
+        piece_num = 0
+        for i in x:
+            tokens = trainData[i]
+            start_point = 0
+            samples = []
+            while start_point < len(tokens) - n_ctx:
+                samples.append(tokens[start_point: start_point + n_ctx])
+                start_point += stride
+            if start_point < len(tokens):
+                samples.append(tokens[len(tokens)-n_ctx:])
+               
+            random.shuffle(samples) 
+
+            for step in range(len(samples) // batch_size):  # batch_size=2, drop last
+
+                #  prepare data
+                batch = samples[step * batch_size: (step + 1) * batch_size]
+                batch_inputs = []
+                for ids in batch:
+                    int_ids = [int(x) for x in ids]
+                    batch_inputs.append(int_ids)
+
+                batch_inputs = torch.tensor(batch_inputs).long().to(device)
+
+                #  forward pass
+                outputs = model.forward(input_ids=batch_inputs, labels=batch_inputs)
+                loss, logits = outputs[:2]
+
+                #  get loss
+                if multi_gpu:
+                    loss = loss.mean()
+
+                #  loss backward
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm) # max_grad_norm=1.0
+
+                #  optimizer step
+                running_loss += loss.item()
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
+                #  log to tensorboard
+                tb_writer.add_scalar('loss', loss.item() , step)
+                print('\tTraining: Step {} of piece {} , loss {}'.format(
+                        step + 1,
+                        piece_num,
+                        running_loss))
+                running_loss = 0
+                
+            piece_num += 1
+
+        print('\tTraining: saving model for epoch {}'.format(epoch + 1))
+        if not os.path.exists(output_dir + 'model_epoch{}'.format(epoch + 1)):
+            os.mkdir(output_dir + 'model_epoch{}'.format(epoch + 1))
+        model_to_save = model.module if hasattr(model, 'module') else model
+        model_to_save.save_pretrained(output_dir + 'model_epoch{}'.format(epoch + 1))
+        print('\tTraining: epoch {} finished'.format(epoch + 1))
+
+        then = datetime.now()
+        print('\tTraining: time for one epoch: {}'.format(then - now))
 
 if __name__ == '__main__':
     main()

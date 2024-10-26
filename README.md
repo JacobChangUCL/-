@@ -68,3 +68,13 @@ whitespace_tokenize():
 - 加载tokenized_data。
 - 配置optimizer和scheduler。
 - 训练tokenized_data，log to tensorboard, 保存模型文件。
+
+## v4
+- 将main.py重命名为train.py
+- 新建main.py,用以生成论语风格的文字。
+- 在main函数中添加必要参数。
+- 新建generate函数，用以生成文字，所用的模型文件为训练阶段产生的最后一个模型（Datasets/model/model_epoch200）。
+- 新建top_k_top_p_filtering函数,Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+- 在main函数中调用A/tokenization_bert_chinese中的BertTokenizer类将prefix转换为token id
+- 在main函数中循环生成文字，将其中的特殊符号[MASK]替换为' ',[CLS]替换为'\n\n'，'[SEP]'替换为'\n'。
+- 在main函数中格式化输出生成的文字。

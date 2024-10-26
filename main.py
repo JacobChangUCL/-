@@ -1,190 +1,134 @@
-import os
-from A import tokenization_bert_chinese
-from torch.utils.tensorboard import SummaryWriter
-import argparse
-import transformers
 import torch
 import torch.nn.functional as F
-from torch.nn import DataParallel
-import numpy as np
-from tqdm import tqdm
-import random
-from datetime import datetime
+from tqdm import trange
+import argparse
+from transformers import GPT2LMHeadModel
+from A import tokenization_bert_chinese as tokenization_bert
 
-trainData = []
 
-def readTokenizedData(file)->list[int]:
+def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+        Args:
+            logits: logits distribution shape (vocabulary size)
+            top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+            top_p > 0.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+        From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
     """
-    Read tokenized data from file, return a list of tokens
-    It is used to read txt file in the "tokenized" folder
-    """
-    with open(file, 'r') as f:
-        line = f.read().strip()
-    tokens = line.split()
-    tokens = [int(token) for token in tokens]
-    return tokens
+    # batch size 1 for now - could be updated for more but the code would be less clear
+    assert logits.dim() == 1  
+    # Safety check
+    top_k = min(top_k, logits.size(-1))  
+    if top_k > 0:
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
 
-def buildTrainData(data_path, num_pieces):
-    """
-    Read multiple tokenized data files and combine them into trainData
-    """
-    for i in range(num_pieces):
-        tokens = readTokenizedData(data_path + 'tokenized_train_{}.txt'.format(i))
-        trainData.append(tokens)
-    
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        indices_to_remove = sorted_indices[sorted_indices_to_remove]
+        logits[indices_to_remove] = filter_value
+    return logits
+
+
+def generate(model, context, length, n_ctx, tokenizer, temperature=1.0, top_k=30, top_p=0.0, repitition_penalty=1.0, device='cpu'):
+    context = torch.tensor(context, dtype=torch.long, device=device)
+    context = context.unsqueeze(0)
+    generated = context
+    #print(generated)
+    with torch.no_grad():
+        for _ in trange(length):
+            inputs = {'input_ids': generated[0][-(n_ctx - 1):].unsqueeze(0)}
+            outputs = model(**inputs)  
+            next_token_logits = outputs[0][0, -1, :]
+            for id in set(generated):
+                next_token_logits[id] /= repitition_penalty
+            next_token_logits = next_token_logits / temperature
+            next_token_logits[tokenizer.convert_tokens_to_ids('[UNK]')] = -float('Inf')
+            filtered_logits = top_k_top_p_filtering(next_token_logits, top_k=top_k, top_p=top_p)
+            next_token = torch.multinomial(F.softmax(filtered_logits, dim=-1), num_samples=1)
+            generated = torch.cat((generated, next_token.unsqueeze(0)), dim=1)
+    return generated.tolist()[0]
 
 def main():
-    #define the command line arguments
-    parser_train = argparse.ArgumentParser()
-    parser_train.add_argument('--model_config', default='Datasets/config_lunyu.json', type=str, required=False, help='model config file')
-    parser_train.add_argument('--tokenizer_path', default='Datasets/vocab_file.txt', type=str, required=False, help='vocab file')
-    parser_train.add_argument('--raw_data_path', default='Datasets/train_lunyu.json', type=str, required=False, help='raw trainning data')
-    parser_train.add_argument('--tokenized_data_path', default='Datasets/tokenized/', type=str, required=False, help='path of tokenized data')
-    parser_train.add_argument('--epochs', default=20, type=int, required=False, help='epochs')
-    parser_train.add_argument('--batch_size', default=2, type=int, required=False, help='batch size')
-    parser_train.add_argument('--lr', default=1.5e-4, type=float, required=False, help='learning rate')
-    parser_train.add_argument('--warmup_steps', default=9000, type=int, required=False, help='warm up steps')
-    parser_train.add_argument('--stride', default=128, type=int, required=False, help='stride window')
-    parser_train.add_argument('--max_grad_norm', default=1.0, type=float, required=False)
-    parser_train.add_argument('--num_pieces', default=10, type=int, required=False, help='trainning pieces')
-    parser_train.add_argument('--output_dir', default='Datasets/model/', type=str, required=False, help='output dir for model')
-    parser_train.add_argument('--writer_dir', default='Datasets/tensorboard_summary/', type=str, required=False, help='Tensorboard path')
+    parser_gen = argparse.ArgumentParser()
+    parser_gen.add_argument('--length', default=80, type=int, required=False, help='length of generation')
+    parser_gen.add_argument('--nsamples', default=1, type=int, required=False, help='samples')
+    parser_gen.add_argument('--temperature', default=1, type=float, required=False, help='temperature')
+    parser_gen.add_argument('--topk', default=8, type=int, required=False, help='top k')
+    parser_gen.add_argument('--topp', default=0, type=float, required=False, help='topp')
+    parser_gen.add_argument('--vocab_file', default='Datasets/vocab_file.txt', type=str, required=False, help='vocab file path')
+    parser_gen.add_argument('--model_path', default='Datasets/model/model_epoch200', type=str, required=False, help='model path')
+    parser_gen.add_argument('--prefix', default='Hello', type=str, required=False, help='start of words')
+    parser_gen.add_argument('--repetition_penalty', default=1.0, type=float, required=False)
 
-    args = parser_train.parse_args()
-    print('\tTraining args:\n' + args.__repr__())
-   
-    model_config = transformers.modeling_gpt2.GPT2Config.from_json_file(args.model_config)
-    print('\tTraining: config file:\n' + model_config.to_json_string())
-    # get the context length from the model config
-    n_ctx = model_config.n_ctx 
+    args = parser_gen.parse_args()
+    print('\t args:\n' + args.__repr__())
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print('\t Training: device:', device)
+    # set arguments for generation
+    length = args.length
+    nsamples = args.nsamples
+    temperature = args.temperature
+    topk = args.topk
+    topp = args.topp
+    repetition_penalty = args.repetition_penalty
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = tokenization_bert.BertTokenizer(vocab_file=args.vocab_file)
 
-    tokenized_data_path = args.tokenized_data_path
-    epochs = args.epochs
-    batch_size = args.batch_size
-    lr = args.lr
-    # Learning rate warmup: the learning rate is increased linearly from 0 to lr over the first warmup_steps training steps.
-    warmup_steps = args.warmup_steps
-    stride = args.stride
-    max_grad_norm = args.max_grad_norm
-    num_pieces = args.num_pieces
-    output_dir = args.output_dir
-    tb_writer = SummaryWriter(log_dir=args.writer_dir)
 
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+    model = GPT2LMHeadModel.from_pretrained(args.model_path)
 
-    model = transformers.modeling_gpt2.GPT2LMHeadModel(config=model_config)
-
-    print("Training...")
-
-    model.train()
     model.to(device)
+    model.eval()
 
-    num_parameters = 0
-    parameters = model.parameters()
-    for parameter in parameters:
-        num_parameters += parameter.numel()
-    print('\tTraining: number of parameters: {}'.format(num_parameters))
+    n_ctx = model.config.n_ctx
 
-    multi_gpu = False
-    full_len = 0
+    if length == -1:
+        length = model.config.n_ctx
 
-    buildTrainData(tokenized_data_path, num_pieces) # num_pieces=10
+    while True:
+        raw_text = args.prefix
+        tokenize_raw = tokenizer.tokenize(raw_text)
+        context_tokens = tokenizer.convert_tokens_to_ids(tokenize_raw)
+        #print(context_tokens)
 
-    for i in range(num_pieces):
-        full_len += len(trainData[i])
-    
-    print(full_len) # 17825,the total number of tokens
+        generated = 0
+        for _ in range(nsamples):
+            out = generate(
+                model=model,
+                context=context_tokens,
+                length=length,
+                n_ctx=n_ctx,
+                tokenizer=tokenizer,
+                temperature=temperature, top_k=topk, top_p=topp, repitition_penalty=repetition_penalty, 
+                device=device
+            )
+            generated += 1
+            text = tokenizer.convert_ids_to_tokens(out)
 
-    total_steps = int(full_len / stride * epochs / batch_size )
-    #total_samples = (full_len / stride) * epochs
-    #total_steps = int(total_samples / batch_size)
-    print('\tTraining: total steps = {}'.format(total_steps))
+            for i, item in enumerate(text):
+                if item == '[MASK]':
+                    text[i] = ''
+                elif item == '[CLS]':
+                    text[i] = '\n\n'
+                elif item == '[SEP]':
+                    text[i] = '\n'
 
-    #define optimizer and scheduler
-    optimizer = transformers.AdamW(model.parameters(), lr=lr, correct_bias=True)
-
-    scheduler = transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps,
-                                                            num_training_steps=total_steps)
-
-    if torch.cuda.device_count() > 1:
-        print("\tTraining: Let's use", torch.cuda.device_count(), "GPUs!")
-        model = DataParallel(model, device_ids=[int(i) for i in range(torch.cuda.device_count())])
-        multi_gpu = True
-
-    print('\tTraining: starting training')
-    overall_step = 0
-    running_loss = 0
-
-    for epoch in range(epochs):
-        print('Training: epoch {}'.format(epoch + 1))
-        now = datetime.now()
-        x = np.linspace(0, num_pieces - 1, num_pieces, dtype=np.int32)
-        random.shuffle(x)
-        piece_num = 0
-        for i in x:
-            tokens = trainData[i]
-            start_point = 0
-            samples = []
-            while start_point < len(tokens) - n_ctx:
-                samples.append(tokens[start_point: start_point + n_ctx])
-                start_point += stride
-            if start_point < len(tokens):
-                samples.append(tokens[len(tokens)-n_ctx:])
-               
-            random.shuffle(samples) 
-
-            for step in range(len(samples) // batch_size):  # batch_size=2, drop last
-
-                #  prepare data
-                batch = samples[step * batch_size: (step + 1) * batch_size]
-                batch_inputs = []
-                for ids in batch:
-                    int_ids = [int(x) for x in ids]
-                    batch_inputs.append(int_ids)
-
-                batch_inputs = torch.tensor(batch_inputs).long().to(device)
-
-                #  forward pass
-                outputs = model.forward(input_ids=batch_inputs, labels=batch_inputs)
-                loss, logits = outputs[:2]
-
-                #  get loss
-                if multi_gpu:
-                    loss = loss.mean()
-
-                #  loss backward
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm) # max_grad_norm=1.0
-
-                #  optimizer step
-                running_loss += loss.item()
-                optimizer.step()
-                optimizer.zero_grad()
-                scheduler.step()
-
-                #  log to tensorboard
-                tb_writer.add_scalar('loss', loss.item() , step)
-                print('\tTraining: Step {} of piece {} , loss {}'.format(
-                        step + 1,
-                        piece_num,
-                        running_loss))
-                running_loss = 0
-                
-            piece_num += 1
-
-        print('\tTraining: saving model for epoch {}'.format(epoch + 1))
-        if not os.path.exists(output_dir + 'model_epoch{}'.format(epoch + 1)):
-            os.mkdir(output_dir + 'model_epoch{}'.format(epoch + 1))
-        model_to_save = model.module if hasattr(model, 'module') else model
-        model_to_save.save_pretrained(output_dir + 'model_epoch{}'.format(epoch + 1))
-        print('\tTraining: epoch {} finished'.format(epoch + 1))
-
-        then = datetime.now()
-        print('\tTraining: time for one epoch: {}'.format(then - now))
+            info = "=" * 35 + " SAMPLE " + str(generated) + " " + "=" * 35 + "\n"
+            print(info)
+            text = ''.join(text).replace('##', '').strip()
+            print(text)
+        print("=" * 80)
+        if generated == nsamples:
+            break
 
 if __name__ == '__main__':
     main()

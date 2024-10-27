@@ -4,8 +4,22 @@ from tqdm import trange
 import argparse
 from transformers import GPT2LMHeadModel
 from A import tokenization_bert_chinese as tokenization_bert
+import json
+def read_and_split_sentences(json_file_path):
+    # 读取 JSON 文件
+    with open(json_file_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    # 初始化一个列表来存储所有句子
+    sentences = []
+
+    # 定义分句的正则表达式模式，匹配中文句子结束符号
 
 
+    for sentence in data:
+        sentences.append(sentence)
+
+    return sentences
 def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
     """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
         Args:
@@ -58,16 +72,21 @@ def generate(model, context, length, n_ctx, tokenizer, temperature=1.0, top_k=30
             generated = torch.cat((generated, next_token.unsqueeze(0)), dim=1)
     return generated.tolist()[0]
 
+
+
+
+
 def main():
+    # get arguments from command line.
     parser_gen = argparse.ArgumentParser()
-    parser_gen.add_argument('--length', default=80, type=int, required=False, help='length of generation')
-    parser_gen.add_argument('--nsamples', default=1, type=int, required=False, help='samples')
+    parser_gen.add_argument('--length', default=20, type=int, required=False, help='length of generation') #fixed length
+    parser_gen.add_argument('--nsamples', default=1, type=int, required=False, help='number of samples')
     parser_gen.add_argument('--temperature', default=1, type=float, required=False, help='temperature')
     parser_gen.add_argument('--topk', default=8, type=int, required=False, help='top k')
     parser_gen.add_argument('--topp', default=0, type=float, required=False, help='topp')
     parser_gen.add_argument('--vocab_file', default='Datasets/vocab_file.txt', type=str, required=False, help='vocab file path')
     parser_gen.add_argument('--model_path', default='Datasets/model/model_epoch200', type=str, required=False, help='model path')
-    parser_gen.add_argument('--prefix', default='Hello', type=str, required=False, help='start of words')
+    parser_gen.add_argument('--prefix', default='曾子曰：“吾闻诸夫子，', type=str, required=False, help='start of words')
     parser_gen.add_argument('--repetition_penalty', default=1.0, type=float, required=False)
 
     args = parser_gen.parse_args()
@@ -81,6 +100,8 @@ def main():
     topp = args.topp
     repetition_penalty = args.repetition_penalty
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+
     tokenizer = tokenization_bert.BertTokenizer(vocab_file=args.vocab_file)
 
 
@@ -108,7 +129,7 @@ def main():
                 length=length,
                 n_ctx=n_ctx,
                 tokenizer=tokenizer,
-                temperature=temperature, top_k=topk, top_p=topp, repitition_penalty=repetition_penalty, 
+                temperature=temperature, top_k=topk, top_p=topp, repitition_penalty=repetition_penalty,
                 device=device
             )
             generated += 1
@@ -130,5 +151,83 @@ def main():
         if generated == nsamples:
             break
 
+def generate_model_output(eval_file="Datasets/Dataset_For_Evaluation/Original.json",first_x=5,generated_file="Datasets/Dataset_For_Evaluation/Model_Output.json"):
+    # get arguments from command line.
+    parser_gen = argparse.ArgumentParser()
+
+    parser_gen.add_argument('--nsamples', default=1, type=int, required=False, help='number of samples')
+    parser_gen.add_argument('--temperature', default=1, type=float, required=False, help='temperature')
+    parser_gen.add_argument('--topk', default=8, type=int, required=False, help='top k')
+    parser_gen.add_argument('--topp', default=0, type=float, required=False, help='topp')
+    parser_gen.add_argument('--vocab_file', default='Datasets/vocab_file.txt', type=str, required=False,
+                            help='vocab file path')
+    parser_gen.add_argument('--model_path', default='Datasets/model/model_epoch200', type=str, required=False,
+                            help='model path')
+    parser_gen.add_argument('--prefix', default='曾子曰：“吾闻诸夫子，', type=str, required=False, help='start of words')
+    parser_gen.add_argument('--repetition_penalty', default=1.0, type=float, required=False)
+
+    args = parser_gen.parse_args()
+    print('\t args:\n' + args.__repr__())
+
+    # set arguments for generation
+
+    nsamples = args.nsamples
+    temperature = args.temperature
+    topk = args.topk
+    topp = args.topp
+    repetition_penalty = args.repetition_penalty
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    tokenizer = tokenization_bert.BertTokenizer(vocab_file=args.vocab_file)
+
+    model = GPT2LMHeadModel.from_pretrained(args.model_path)
+
+    model.to(device)
+    model.eval()
+
+    n_ctx = model.config.n_ctx
+
+
+# now we start to generate the output for evaluation
+    sentences_list = read_and_split_sentences(eval_file)
+    predictions = []
+    for j in range(len(sentences_list)):
+        print("\nOriginal text {}=".format(j),sentences_list[j])
+        raw_text = sentences_list[j][:first_x] #use first_x token as the prefix for generation
+        generate_len=max(first_x,len(sentences_list[j])) #generate at least the length of the sentence
+        tokenize_raw = tokenizer.tokenize(raw_text)
+        context_tokens = tokenizer.convert_tokens_to_ids(tokenize_raw)
+        # print(context_tokens)
+
+        generated = 0
+        for _ in range(nsamples):
+            out = generate(
+                model=model,
+                context=context_tokens,
+                length=generate_len,
+                n_ctx=n_ctx,
+                tokenizer=tokenizer,
+                temperature=temperature, top_k=topk, top_p=topp, repitition_penalty=repetition_penalty,
+                device=device
+            )
+            generated += 1
+            text = tokenizer.convert_ids_to_tokens(out)
+
+            for i, item in enumerate(text):
+                if item == '[MASK]':
+                    text[i] = ''
+                elif item == '[CLS]':
+                    text[i] = ''
+                elif item == '[SEP]':
+                    text[i] = ''
+            text = ''.join(text).replace('##', '').strip()
+            print("Generated text for input {}".format(j),text)
+            predictions.append(text)
+
+        # 将列表写入 JSON 文件
+        with open('Datasets/Dataset_For_Evaluation/Model_Output.json','w', encoding='utf-8') as f:
+            json.dump(predictioaddns, f, ensure_ascii=False, indent=4)
+
 if __name__ == '__main__':
-    main()
+    #main()
+    generate_model_output()

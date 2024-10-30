@@ -199,6 +199,8 @@ def generate_model_output(eval_file="Datasets/Dataset_For_Evaluation/Original.js
         context_tokens = tokenizer.convert_tokens_to_ids(tokenize_raw)
         # print(context_tokens)
 
+
+
         generated = 0
         for _ in range(nsamples):
             out = generate(
@@ -226,8 +228,23 @@ def generate_model_output(eval_file="Datasets/Dataset_For_Evaluation/Original.js
 
         # 将列表写入 JSON 文件
         with open('Datasets/Dataset_For_Evaluation/Model_Output.json','w', encoding='utf-8') as f:
-            json.dump(predictioaddns, f, ensure_ascii=False, indent=4)
+            json.dump(predictions, f, ensure_ascii=False, indent=4)
 
 if __name__ == '__main__':
-    #main()
-    generate_model_output()
+    while 1:
+        print("please makesure you have downloaded the fine-turned model.")
+        print("Choose an option:")
+        print("1. Run main function")
+        print("2. Generate model_output file for test set")
+
+        choice = input("Enter the number of your choice: ")
+
+        if choice == '1':
+            main()
+            break
+        elif choice == '2':
+            generate_model_output()
+            break
+        else:
+            print("Invalid choice. Please enter 1 or 2.")
+

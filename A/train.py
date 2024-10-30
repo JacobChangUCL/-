@@ -1,18 +1,16 @@
 import os
-from A import tokenization_bert_chinese
 from torch.utils.tensorboard import SummaryWriter
 import argparse
 import transformers
 import torch
-import torch.nn.functional as F
 from torch.nn import DataParallel
 import numpy as np
-from tqdm import tqdm
 import random
 from datetime import datetime
 
 trainData = []
 testData = []
+
 
 class EarlyStopping:
     def __init__(self, patience=2, delta=0.1):
@@ -38,6 +36,7 @@ class EarlyStopping:
             if self.counter >= self.patience:
                 self.early_stop = True
 
+
 def readTokenizedData(file):
     with open(file, 'r') as f:
         line = f.read().strip()
@@ -45,21 +44,27 @@ def readTokenizedData(file):
     tokens = [int(token) for token in tokens]
     return tokens
 
+
 def buildTrainData(data_path, num_pieces):
     for i in range(num_pieces):
         tokens = readTokenizedData(data_path + 'tokenized_train_{}.txt'.format(i))
         trainData.append(tokens)
-    #choose the last piece as test data
+    # choose the last piece as test data
     tokens = readTokenizedData(data_path + 'tokenized_train_{}.txt'.format(9))
     testData.append(tokens)
 
+
 def main():
-    earlyStopping=EarlyStopping()
+    earlyStopping = EarlyStopping()
     parser_train = argparse.ArgumentParser()
-    parser_train.add_argument('--model_config', default='Datasets/config_lunyu.json', type=str, required=False, help='model config file')
-    parser_train.add_argument('--tokenizer_path', default='Datasets/vocab_file.txt', type=str, required=False, help='vocab file')
-    parser_train.add_argument('--raw_data_path', default='Datasets/train_lunyu.json', type=str, required=False, help='raw trainning data')
-    parser_train.add_argument('--tokenized_data_path', default='Datasets/tokenized/', type=str, required=False, help='path of tokenized data')
+    parser_train.add_argument('--model_config', default='../Datasets/config_lunyu.json', type=str, required=False,
+                              help='model config file')
+    parser_train.add_argument('--tokenizer_path', default='../Datasets/vocab_file.txt', type=str, required=False,
+                              help='vocab file')
+    parser_train.add_argument('--raw_data_path', default='../Datasets/train_lunyu.json', type=str, required=False,
+                              help='raw trainning data')
+    parser_train.add_argument('--tokenized_data_path', default='../Datasets/tokenized/', type=str, required=False,
+                              help='path of tokenized data')
     parser_train.add_argument('--epochs', default=200, type=int, required=False, help='epochs')
     parser_train.add_argument('--batch_size', default=2, type=int, required=False, help='batch size')
     parser_train.add_argument('--lr', default=1.5e-4, type=float, required=False, help='learning rate')
@@ -67,16 +72,18 @@ def main():
     parser_train.add_argument('--stride', default=128, type=int, required=False, help='stride window')
     parser_train.add_argument('--max_grad_norm', default=1.0, type=float, required=False)
     parser_train.add_argument('--num_pieces', default=9, type=int, required=False, help='trainning pieces')
-    parser_train.add_argument('--output_dir', default='Datasets/model/', type=str, required=False, help='output dir for model')
-    parser_train.add_argument('--writer_dir', default='Datasets/tensorboard_summary/', type=str, required=False, help='Tensorboard path')
+    parser_train.add_argument('--output_dir', default='../Datasets/model/', type=str, required=False,
+                              help='output dir for model')
+    parser_train.add_argument('--writer_dir', default='../Datasets/tensorboard_summary/', type=str, required=False,
+                              help='Tensorboard path')
 
     args = parser_train.parse_args()
     print('\tTraining args:\n' + args.__repr__())
-   
+
     model_config = transformers.modeling_gpt2.GPT2Config.from_json_file(args.model_config)
     print('\tTraining: config file:\n' + model_config.to_json_string())
 
-    n_ctx = model_config.n_ctx 
+    n_ctx = model_config.n_ctx
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('\t Training: device:', device)
@@ -111,20 +118,20 @@ def main():
     multi_gpu = False
     full_len = 0
 
-    buildTrainData(tokenized_data_path, num_pieces) # num_pieces=10
+    buildTrainData(tokenized_data_path, num_pieces)  # num_pieces=10
 
     for i in range(num_pieces):
         full_len += len(trainData[i])
-    
-    print(full_len) # 17825
 
-    total_steps = int(full_len / stride * epochs / batch_size )
+    print(full_len)  # 17825
+
+    total_steps = int(full_len / stride * epochs / batch_size)
     print('\tTraining: total steps = {}'.format(total_steps))
 
     optimizer = transformers.AdamW(model.parameters(), lr=lr, correct_bias=True)
 
     scheduler = transformers.get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps,
-                                                            num_training_steps=total_steps)
+                                                             num_training_steps=total_steps)
 
     if torch.cuda.device_count() > 1:
         print("\tTraining: Let's use", torch.cuda.device_count(), "GPUs!")
@@ -135,7 +142,7 @@ def main():
     overall_step = 0
     running_loss = 0
 
-    global_step = 0#the global step for tensorboard
+    global_step = 0  # the global step for tensorboard
 
     for epoch in range(epochs):
         print('Training: epoch {}'.format(epoch + 1))
@@ -151,9 +158,9 @@ def main():
                 samples.append(tokens[start_point: start_point + n_ctx])
                 start_point += stride
             if start_point < len(tokens):
-                samples.append(tokens[len(tokens)-n_ctx:])
-               
-            random.shuffle(samples) 
+                samples.append(tokens[len(tokens) - n_ctx:])
+
+            random.shuffle(samples)
 
             for step in range(len(samples) // batch_size):  # batch_size=2, drop last
 
@@ -176,7 +183,7 @@ def main():
 
                 #  loss backward
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm) # max_grad_norm=1.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)  # max_grad_norm=1.0
 
                 #  optimizer step
                 running_loss += loss.item()
@@ -185,17 +192,16 @@ def main():
                 scheduler.step()
 
                 #  log to tensorboard
-                tb_writer.add_scalar('loss/train', loss.item() , global_step)
+                tb_writer.add_scalar('loss/train', loss.item(), global_step)
                 global_step += 1
 
                 print('\tTraining: Step {} of piece {} , loss {}'.format(
-                        step + 1,
-                        piece_num,
-                        running_loss))
+                    step + 1,
+                    piece_num,
+                    running_loss))
                 running_loss = 0
-                
-            piece_num += 1
 
+            piece_num += 1
 
         print('\tTraining: epoch {} finished'.format(epoch + 1))
 
@@ -242,13 +248,13 @@ def main():
 
                     tb_writer.add_scalar('loss/test', loss.item(), global_step)
 
-        #early stop
-        print("loss.item=",loss.item())
+        # early stop
+        print("loss.item=", loss.item())
         earlyStopping(loss.item())
 
-        print("earlyStopping.best_loss=",earlyStopping.best_loss)
-        print("earlyStopping.counter=",earlyStopping.counter)
-        print("earlyStopping.early_stop=",earlyStopping.early_stop)
+        print("earlyStopping.best_loss=", earlyStopping.best_loss)
+        print("earlyStopping.counter=", earlyStopping.counter)
+        print("earlyStopping.early_stop=", earlyStopping.early_stop)
         # 检查是否需要提前停止
         if earlyStopping.early_stop:
             if not os.path.exists(output_dir + 'model_epoch{}'.format(epoch + 1)):

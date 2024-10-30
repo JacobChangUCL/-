@@ -1,4 +1,4 @@
-﻿#  Deep Learning for Natural Language Processing Assignment
+﻿# Deep Learning for Natural Language Processing Assignment
 ## Organization of the project
 ```plaintext
 DLNLP_assignment_23-24/
@@ -49,14 +49,24 @@ The entrance of the project is main.py, which can be run directly in the termina
 ```
 python main.py
 ```
-
+Then you can see the following sentence in the terminal.
 ```
-packages required to run the code
+please makesure you have downloaded the fine-turned model."
+Choose an option:
+1. Run main function
+2. Generate model_output file for test set
+```
+Packages required to run the code
 ```
 - thulac
 - jieba
+- json
 - keras
 - torch
 - transformer
+- evaluate
 - numpy
 ```
+You can download model parameters from the following link: 
+https://pan.baidu.com/s/1KvtvQGpmzBjsuzFYzer6mQ 
+Extraction code: asdf 

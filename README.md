@@ -1,9 +1,4 @@
-﻿The README file should contain 
-- a brief description of the organization of your project; 
-- the role of each file; 
-- the packages required to run your code (e.g. numpy, scipy, transformers, etc.).
-
-# ELEC0141: Deep Learning for Natural Language Processing Assignment
+﻿#  Deep Learning for Natural Language Processing Assignment
 ## Organization of the project
 ```plaintext
 DLNLP_assignment_23-24/
@@ -54,12 +49,7 @@ The entrance of the project is main.py, which can be run directly in the termina
 ```
 python main.py
 ```
-Then you can see the following sentence in the terminal.
-```
-please makesure you have downloaded the fine-turned model."
-Choose an option:
-1. Run main function
-2. Generate model_output file for test set
+
 ```
 packages required to run the code
 ```
